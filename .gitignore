@@ -4,3 +4,4 @@
 .vscode/launch.json
 .vscode/ipch
 include/config_options.h
+sdkconfig.esp32-c3-devkitc-02.old

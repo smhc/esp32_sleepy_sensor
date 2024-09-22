@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "esp_sleep.h": "c",
+        "esp_err.h": "c"
+    }
+}
