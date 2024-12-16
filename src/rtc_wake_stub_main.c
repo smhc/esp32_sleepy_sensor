@@ -9,9 +9,13 @@
 #include "mqtt_client.h"
 #include "esp_sleep.h"
 #include "config_options.h"
+#include "esp_http_client.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+
+RTC_DATA_ATTR int wake_count;
+RTC_DATA_ATTR int last_state;
 
 static const char *TAG = "wifi_station";
 static EventGroupHandle_t s_wifi_event_group;
@@ -32,6 +36,9 @@ static esp_netif_ip_info_t ip_info = {
         .addr = CONFIG_SUBNET_MASK,
     },
 };
+static esp_http_client_config_t config = {
+    .url = CONFIG_WEB_ADDRESS
+};
 
 static void RTC_IRAM_ATTR event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -48,6 +55,7 @@ static void RTC_IRAM_ATTR event_handler(void* arg, esp_event_base_t event_base,
 }
 
 void RTC_IRAM_ATTR wifi_init_sta(void) {
+    ESP_LOGI(TAG, "Initializing WiFi in station mode");
     s_wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -72,7 +80,7 @@ void RTC_IRAM_ATTR wifi_init_sta(void) {
                                                         NULL,
                                                         &instance_got_ip));
 
-    // ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 }
@@ -96,8 +104,20 @@ void RTC_IRAM_ATTR mqtt_app_start_and_send(void) {
     esp_mqtt_client_stop(client);
 }
 
+void RTC_IRAM_ATTR http_send(void) {
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t err = esp_http_client_perform(client);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+    }
+
+    esp_http_client_cleanup(client);
+}
+
 void RTC_IRAM_ATTR app_main() {
-    // uart_set_baudrate(0, 115200);
+    uart_set_baudrate(0, 115200);
+    ESP_LOGI(TAG, "Initializing ...");
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -109,10 +129,12 @@ void RTC_IRAM_ATTR app_main() {
 
     // Connect and send
     wifi_init_sta();
+
     EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdTRUE, pdTRUE,
         CONFIG_WAIT_MS / portTICK_PERIOD_MS);
     if (ebresult & WIFI_CONNECTED_BIT) {
         mqtt_app_start_and_send();
+        http_send();
     } else {
         ESP_LOGI(TAG, "Failed to connect to AP");
     }
@@ -123,7 +145,8 @@ void RTC_IRAM_ATTR app_main() {
     vEventGroupDelete(s_wifi_event_group);
 
     // And sleep
-    esp_deep_sleep_enable_gpio_wakeup(1<<4, ESP_GPIO_WAKEUP_GPIO_HIGH);
-    esp_deep_sleep_start();
-    // esp_deep_sleep(10000000L);
+    // esp_deep_sleep_enable_gpio_wakeup(1<<4, ESP_GPIO_WAKEUP_GPIO_HIGH);
+    // esp_deep_sleep_enable_gpio_wakeup(1<<4, ESP_GPIO_WAKEUP_GPIO_HIGH);
+    // esp_deep_sleep_start();
+    esp_deep_sleep(10000000L);
 }
