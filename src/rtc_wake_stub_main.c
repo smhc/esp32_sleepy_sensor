@@ -19,11 +19,6 @@
 #define MQTT_PUBLISHED_BIT BIT4
 #define GPIO_WAKE          GPIO_NUM_4
 
-RTC_DATA_ATTR int wake_count;
-RTC_FAST_ATTR time_t last_wake_time;
-RTC_FAST_ATTR int msg_type;
-RTC_FAST_ATTR int last_message_id;
-
 static RTC_DATA_ATTR const char *TAG = "wifi_station";
 static RTC_DATA_ATTR EventGroupHandle_t s_wifi_event_group;
 static RTC_DATA_ATTR esp_netif_t *netif;
@@ -116,7 +111,6 @@ static void RTC_IRAM_ATTR mqtt_event_handler(void *handler_args, esp_event_base_
         break;
     case MQTT_EVENT_PUBLISHED:
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
-        last_message_id = event->msg_id;
         xEventGroupSetBits(s_wifi_event_group, MQTT_PUBLISHED_BIT);
         break;
     case MQTT_EVENT_ERROR:
@@ -150,6 +144,11 @@ int RTC_IRAM_ATTR mqtt_app_send(esp_mqtt_client_handle_t client, char* str) {
     int msg_id = esp_mqtt_client_publish(client, CONFIG_MQTT_TOPIC, str, 0, 0, 0);
     if (msg_id < 0) {
         ESP_LOGI(TAG, "Failed to publish message\n");
+    }
+    EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, MQTT_PUBLISHED_BIT, pdTRUE, pdTRUE,
+        (CONFIG_WAIT_MS * 3) / portTICK_PERIOD_MS);
+    if (!ebresult || !(ebresult & MQTT_PUBLISHED_BIT)) {
+        ESP_LOGI(TAG, "Failed to wait for published message");
     }
     return msg_id;
 }
@@ -204,9 +203,6 @@ void RTC_IRAM_ATTR app_main() {
         gpio_set_direction(GPIO_WAKE, GPIO_MODE_INPUT);
     }
 
-    int wakegpiolevel = gpio_get_level(GPIO_WAKE);
-    ESP_LOGI(TAG, "GPIO level: %d", wakegpiolevel);
-
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -219,43 +215,33 @@ void RTC_IRAM_ATTR app_main() {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Connect and send
     if (connect_wifi()) {
         esp_mqtt_client_handle_t client = mqtt_app_start();
-        xEventGroupWaitBits(s_wifi_event_group, MQTT_CONNECT_BIT, pdTRUE, pdTRUE, CONFIG_WAIT_MS / portTICK_PERIOD_MS);
+        xEventGroupWaitBits(s_wifi_event_group, MQTT_CONNECT_BIT, pdTRUE, pdTRUE, (CONFIG_WAIT_MS * 2) / portTICK_PERIOD_MS);
 
+        // defer checking the pin until we're connected to allow bounce to settle
         int curgpiolevel = gpio_get_level(GPIO_WAKE);
-        mqtt_app_send(client, wakegpiolevel ? "open" : "close");
-        if (wakegpiolevel != curgpiolevel) {
-            mqtt_app_send(client, curgpiolevel ? "open(q)" : "close(q)");
-        }
-        mqtt_app_stop(client);
+        mqtt_app_send(client, curgpiolevel ? "open" : "close");
 
-        // Tear down wifi
+        // Tear down mqtt / wifi
+        mqtt_app_stop(client);
         esp_wifi_disconnect();
-        xEventGroupWaitBits(s_wifi_event_group, WIFI_FAIL_BIT, pdFALSE, pdTRUE, CONFIG_WAIT_MS / portTICK_PERIOD_MS);
+        xEventGroupWaitBits(s_wifi_event_group, WIFI_FAIL_BIT, pdFALSE, pdTRUE, (CONFIG_WAIT_MS * 3) / portTICK_PERIOD_MS);
         vEventGroupDelete(s_wifi_event_group);
 
-        esp_err_t res;
-        do {
-            esp_deepsleep_gpio_wake_up_mode_t wake_mode;
-            if (curgpiolevel == 0) {
-                wake_mode = ESP_GPIO_WAKEUP_GPIO_HIGH;
-            } else {
-                wake_mode = ESP_GPIO_WAKEUP_GPIO_LOW;
-            }
-            // And sleep
-            esp_deep_sleep_enable_gpio_wakeup(1<<GPIO_WAKE, wake_mode);
-            // esp_deep_sleep_start();
-            res = esp_deep_sleep_try_to_start();
-            curgpiolevel = gpio_get_level(GPIO_WAKE);
-            ESP_LOGI(TAG, "Failed to enter deep sleep with gpio");
-        } while (res != ESP_OK);
-        ESP_LOGI(TAG, "Failed to sleep");
-        esp_deep_sleep(10000000L);
+        esp_deepsleep_gpio_wake_up_mode_t wake_mode = 
+            curgpiolevel ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH;
+        esp_deep_sleep_enable_gpio_wakeup(1<<GPIO_WAKE, wake_mode);
+        // And sleep. We may immediately wake if the pin has changed state
+        esp_deep_sleep_start();
+        // res = esp_deep_sleep_try_to_start();
+        curgpiolevel = gpio_get_level(GPIO_WAKE);
+        ESP_LOGI(TAG, "Failed to enter deep sleep with gpio");
+        // should never get here
     }
     else {
         ESP_LOGI(TAG, "Failed to connect to AP");
-        esp_deep_sleep(10000000L);
     }
+    // try again in 15 minutes
+    esp_deep_sleep(900000000L);
 }
