@@ -10,7 +10,7 @@
 #include "mqtt_client.h"
 #include "esp_sleep.h"
 #include "config_options.h"
-#include "esp_http_client.h"
+// #include "esp_http_client.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -39,9 +39,9 @@ static esp_netif_ip_info_t ip_info = {
         .addr = CONFIG_SUBNET_MASK,
     },
 };
-static esp_http_client_config_t config = {
-    .url = CONFIG_WEB_ADDRESS
-};
+// static esp_http_client_config_t config = {
+//     .url = CONFIG_WEB_ADDRESS
+// };
 
 static void RTC_IRAM_ATTR event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -144,11 +144,13 @@ int RTC_IRAM_ATTR mqtt_app_send(esp_mqtt_client_handle_t client, char* str) {
     int msg_id = esp_mqtt_client_publish(client, CONFIG_MQTT_TOPIC, str, 0, 0, 0);
     if (msg_id < 0) {
         ESP_LOGI(TAG, "Failed to publish message\n");
-    }
-    EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, MQTT_PUBLISHED_BIT, pdTRUE, pdTRUE,
-        (CONFIG_WAIT_MS * 3) / portTICK_PERIOD_MS);
-    if (!ebresult || !(ebresult & MQTT_PUBLISHED_BIT)) {
-        ESP_LOGI(TAG, "Failed to wait for published message");
+    } else {
+        EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, MQTT_PUBLISHED_BIT, pdTRUE, pdTRUE,
+            (CONFIG_WAIT_MS * 3) / portTICK_PERIOD_MS);
+        if (!ebresult || !(ebresult & MQTT_PUBLISHED_BIT)) {
+            ESP_LOGI(TAG, "Failed to wait for published message");
+            return -msg_id;
+        }
     }
     return msg_id;
 }
@@ -159,16 +161,16 @@ void RTC_IRAM_ATTR mqtt_app_stop(esp_mqtt_client_handle_t client) {
     esp_mqtt_client_destroy(client);
 }
 
-void RTC_IRAM_ATTR http_send(void) {
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_err_t err = esp_http_client_perform(client);
+// void RTC_IRAM_ATTR http_send(void) {
+//     esp_http_client_handle_t client = esp_http_client_init(&config);
+//     esp_err_t err = esp_http_client_perform(client);
 
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
-    }
+//     if (err != ESP_OK) {
+//         ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+//     }
 
-    esp_http_client_cleanup(client);
-}
+//     esp_http_client_cleanup(client);
+// }
 
 bool RTC_IRAM_ATTR tryconnect(bool retry) {
     netif = esp_netif_create_default_wifi_sta();
@@ -195,12 +197,26 @@ bool RTC_IRAM_ATTR connect_wifi() {
     return result;
 }
 
+void RTC_IRAM_ATTR disconnect_wifi() {
+    esp_wifi_disconnect();
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_FAIL_BIT, pdFALSE, pdTRUE, (CONFIG_WAIT_MS * 3) / portTICK_PERIOD_MS);
+    vEventGroupDelete(s_wifi_event_group);
+}
+
+void RTC_IRAM_ATTR sleep_retry(void) {
+    // try again in ~15 minutes
+    disconnect_wifi();
+    esp_deep_sleep(900000000L);
+}
+
 void RTC_IRAM_ATTR app_main() {
     uart_set_baudrate(0, 115200);
     ESP_LOGI(TAG, "Initializing ...");
     esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
     if (wc != ESP_SLEEP_WAKEUP_GPIO) {
         gpio_set_direction(GPIO_WAKE, GPIO_MODE_INPUT);
+        gpio_pulldown_dis(GPIO_WAKE);
+        gpio_pullup_dis(GPIO_WAKE);
     }
 
     // Initialize NVS
@@ -217,25 +233,33 @@ void RTC_IRAM_ATTR app_main() {
 
     if (connect_wifi()) {
         esp_mqtt_client_handle_t client = mqtt_app_start();
-        xEventGroupWaitBits(s_wifi_event_group, MQTT_CONNECT_BIT, pdTRUE, pdTRUE, (CONFIG_WAIT_MS * 2) / portTICK_PERIOD_MS);
+        EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, MQTT_CONNECT_BIT, pdTRUE, pdTRUE, (CONFIG_WAIT_MS * 2) / portTICK_PERIOD_MS);
+        if (!ebresult || !(ebresult & MQTT_CONNECT_BIT)) {
+            // try again in ~15 minutes
+            sleep_retry();
+            return;
+        }
 
         // defer checking the pin until we're connected to allow bounce to settle
         int curgpiolevel = gpio_get_level(GPIO_WAKE);
-        mqtt_app_send(client, curgpiolevel ? "open" : "close");
+        int msg_id = mqtt_app_send(client, curgpiolevel ? "open" : "close");
+        if (msg_id < 0) {
+            // try again in ~15 minutes
+            mqtt_app_stop(client);
+            sleep_retry();
+            return;
+        }
 
         // Tear down mqtt / wifi
         mqtt_app_stop(client);
-        esp_wifi_disconnect();
-        xEventGroupWaitBits(s_wifi_event_group, WIFI_FAIL_BIT, pdFALSE, pdTRUE, (CONFIG_WAIT_MS * 3) / portTICK_PERIOD_MS);
-        vEventGroupDelete(s_wifi_event_group);
+        disconnect_wifi();
 
-        esp_deepsleep_gpio_wake_up_mode_t wake_mode = 
+        esp_deepsleep_gpio_wake_up_mode_t wake_mode =
             curgpiolevel ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH;
-        esp_deep_sleep_enable_gpio_wakeup(1<<GPIO_WAKE, wake_mode);
+        esp_deep_sleep_enable_gpio_wakeup(1 << GPIO_WAKE, wake_mode);
         // And sleep. We may immediately wake if the pin has changed state
         esp_deep_sleep_start();
         // res = esp_deep_sleep_try_to_start();
-        curgpiolevel = gpio_get_level(GPIO_WAKE);
         ESP_LOGI(TAG, "Failed to enter deep sleep with gpio");
         // should never get here
     }
@@ -243,5 +267,5 @@ void RTC_IRAM_ATTR app_main() {
         ESP_LOGI(TAG, "Failed to connect to AP");
     }
     // try again in 15 minutes
-    esp_deep_sleep(900000000L);
+    sleep_retry();
 }

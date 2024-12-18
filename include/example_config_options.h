@@ -7,4 +7,4 @@
 #define CONFIG_MQTT_BROKER_URI "mqtt://192.168.1.120"
 #define CONFIG_MQTT_TOPIC "esp32sensor/door1"
 #define CONFIG_WEB_ADDRESS "http://192.168.1.80/relay/0?turn=on"
-#define CONFIG_WAIT_MS 500
+#define CONFIG_WAIT_MS 800
