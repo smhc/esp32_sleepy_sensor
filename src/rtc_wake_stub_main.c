@@ -10,7 +10,7 @@
 #include "mqtt_client.h"
 #include "esp_sleep.h"
 #include "config_options.h"
-// #include "esp_http_client.h"
+#include "esp_http_client.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -19,7 +19,7 @@
 #define MQTT_PUBLISHED_BIT BIT4
 #define GPIO_WAKE          GPIO_NUM_4
 
-static RTC_DATA_ATTR const char *TAG = "wifi_station";
+static RTC_DATA_ATTR const char *TAG = "mysensor";
 static RTC_DATA_ATTR EventGroupHandle_t s_wifi_event_group;
 static RTC_DATA_ATTR esp_netif_t *netif;
 static RTC_DATA_ATTR wifi_config_t wifi_config = {
@@ -39,9 +39,10 @@ static esp_netif_ip_info_t ip_info = {
         .addr = CONFIG_SUBNET_MASK,
     },
 };
-// static esp_http_client_config_t config = {
-//     .url = CONFIG_WEB_ADDRESS
-// };
+static esp_http_client_config_t config = {
+    .url = CONFIG_WEB_ADDRESS,
+    .is_async = true
+};
 
 static void RTC_IRAM_ATTR event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -161,16 +162,16 @@ void RTC_IRAM_ATTR mqtt_app_stop(esp_mqtt_client_handle_t client) {
     esp_mqtt_client_destroy(client);
 }
 
-// void RTC_IRAM_ATTR http_send(void) {
-//     esp_http_client_handle_t client = esp_http_client_init(&config);
-//     esp_err_t err = esp_http_client_perform(client);
+esp_http_client_handle_t RTC_IRAM_ATTR http_send(void) {
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t err = esp_http_client_perform(client);
 
-//     if (err != ESP_OK) {
-//         ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
-//     }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+    }
 
-//     esp_http_client_cleanup(client);
-// }
+    return client;
+}
 
 bool RTC_IRAM_ATTR tryconnect(bool retry) {
     netif = esp_netif_create_default_wifi_sta();
@@ -210,7 +211,7 @@ void RTC_IRAM_ATTR sleep_retry(void) {
 }
 
 void RTC_IRAM_ATTR app_main() {
-    uart_set_baudrate(0, 115200);
+    // uart_set_baudrate(0, 115200);
     ESP_LOGI(TAG, "Initializing ...");
     esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
     if (wc != ESP_SLEEP_WAKEUP_GPIO) {
@@ -232,7 +233,14 @@ void RTC_IRAM_ATTR app_main() {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     if (connect_wifi()) {
-        esp_mqtt_client_handle_t client = mqtt_app_start();
+        // async http request
+        int curgpiolevel = gpio_get_level(GPIO_WAKE);
+        esp_http_client_handle_t httpclient = NULL;
+        if (curgpiolevel == 1) {
+            httpclient = http_send();
+        }
+
+        esp_mqtt_client_handle_t mqttclient = mqtt_app_start();
         EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, MQTT_CONNECT_BIT, pdTRUE, pdTRUE, (CONFIG_WAIT_MS * 2) / portTICK_PERIOD_MS);
         if (!ebresult || !(ebresult & MQTT_CONNECT_BIT)) {
             // try again in ~15 minutes
@@ -241,17 +249,22 @@ void RTC_IRAM_ATTR app_main() {
         }
 
         // defer checking the pin until we're connected to allow bounce to settle
-        int curgpiolevel = gpio_get_level(GPIO_WAKE);
-        int msg_id = mqtt_app_send(client, curgpiolevel ? "open" : "close");
+        curgpiolevel = gpio_get_level(GPIO_WAKE);
+        int msg_id = mqtt_app_send(mqttclient, curgpiolevel ? "open" : "close");
         if (msg_id < 0) {
             // try again in ~15 minutes
-            mqtt_app_stop(client);
+            mqtt_app_stop(mqttclient);
             sleep_retry();
             return;
         }
 
         // Tear down mqtt / wifi
-        mqtt_app_stop(client);
+        mqtt_app_stop(mqttclient);
+        
+        // hopefully we're done with the async http request by now
+        if (httpclient != NULL) {
+            esp_http_client_cleanup(httpclient);
+        }
         disconnect_wifi();
 
         esp_deepsleep_gpio_wake_up_mode_t wake_mode =
