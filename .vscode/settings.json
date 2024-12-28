@@ -1,6 +1,12 @@
 {
     "files.associations": {
         "esp_sleep.h": "c",
-        "esp_err.h": "c"
+        "esp_err.h": "c",
+        "esp_phy_init.h": "c",
+        "cmath": "cpp",
+        "compare": "cpp",
+        "*.tcc": "cpp",
+        "config_options.h": "c",
+        "phy.h": "c"
     }
 }
