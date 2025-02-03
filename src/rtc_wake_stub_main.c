@@ -9,15 +9,15 @@
 #include "config_options.h"
 #include "wifi_connect.h"
 #include "mqtt_commands.h"
-#include "http_commands.h"
+// #include "http_commands.h"
 
 static const char *TAG = "main_stub";
 
 #define GPIO_WAKE          GPIO_NUM_4
-#define DOOR_OPEN_STATE    ESP_GPIO_WAKEUP_GPIO_HIGH
-#define DOOR_CLOSE_STATE   ESP_GPIO_WAKEUP_GPIO_LOW
+#define REED_OPEN_STATE    ESP_GPIO_WAKEUP_GPIO_HIGH
+#define REED_CLOSE_STATE   ESP_GPIO_WAKEUP_GPIO_LOW
 
-int RTC_IRAM_ATTR httpcount = 0;
+int RTC_IRAM_ATTR stillopen = 0;
 
 void RTC_IRAM_ATTR sleep_retry(void) {
     // try again in ~15 minutes
@@ -48,24 +48,17 @@ void RTC_IRAM_ATTR app_main() {
         int msg_id = -1;
 
         int curgpiolevel = gpio_get_level(GPIO_WAKE);
-        if (curgpiolevel == DOOR_OPEN_STATE) {
-            if (httpcount++ < 20) {
-                // 160 minutes
-                http_send();
-            }
-        } else {
-            httpcount = 0;
-        }
+        // http_send(curgpiolevel == REED_OPEN_STATE);
 
         esp_mqtt_client_handle_t mqttclient = mqtt_app_start();
         if (mqttclient != NULL) {
             // defer checking the pin until we're connected to allow bounce to settle
             curgpiolevel = gpio_get_level(GPIO_WAKE);
-            msg_id = mqtt_app_send(mqttclient, curgpiolevel == DOOR_OPEN_STATE ? "open" : "close");
+            msg_id = mqtt_app_send(mqttclient, curgpiolevel == REED_OPEN_STATE ? "open" : "close");
             if (msg_id < 0) {
                 ESP_LOGE(TAG, "mqtt send failed...");
                 // try one more time
-                msg_id = mqtt_app_send(mqttclient, curgpiolevel == DOOR_OPEN_STATE ? "open" : "close");
+                msg_id = mqtt_app_send(mqttclient, curgpiolevel == REED_OPEN_STATE ? "open" : "close");
             }
         }
 
@@ -77,7 +70,7 @@ void RTC_IRAM_ATTR app_main() {
         disconnect_wifi();
 
         esp_deepsleep_gpio_wake_up_mode_t wake_mode =
-            curgpiolevel == DOOR_OPEN_STATE ? DOOR_CLOSE_STATE : DOOR_OPEN_STATE;
+            curgpiolevel == REED_OPEN_STATE ? REED_CLOSE_STATE : REED_OPEN_STATE;
         esp_deep_sleep_enable_gpio_wakeup(1 << GPIO_WAKE, wake_mode);
 
         if (msg_id < 0) {
@@ -89,13 +82,13 @@ void RTC_IRAM_ATTR app_main() {
 
         // And sleep. We may immediately wake if the pin has changed state
         // if open, also wake every 8 minutes to resend light on signal
-        if (curgpiolevel == DOOR_OPEN_STATE) {
+        if (curgpiolevel == REED_OPEN_STATE) {
             // sleep for ~8 minutes, or pin changes state
-            ESP_LOGI(TAG, "Door open. Deep sleep for timer or gpio change");
+            ESP_LOGI(TAG, "Reed open. Deep sleep for timer or gpio change");
             esp_deep_sleep(480000000L);
         } else {
             // sleep until the pin changes state
-            ESP_LOGI(TAG, "Door closed. Deep sleep for gpio change");
+            ESP_LOGI(TAG, "Reed closed. Deep sleep for gpio change");
             esp_deep_sleep_start();
         }
         ESP_LOGE(TAG, "Failed to enter deep sleep with gpio");

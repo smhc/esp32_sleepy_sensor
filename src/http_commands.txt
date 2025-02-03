@@ -6,14 +6,16 @@
 
 static const char *TAG = "http_commands";
 
+static char msg[sizeof(CONFIG_TELEGRAM_URI) + 10];
 static esp_http_client_config_t RTC_IRAM_ATTR httpconfig = {
-    .url = CONFIG_WEB_ADDRESS,
+    .url = msg,
     .method = HTTP_METHOD_GET,
     .timeout_ms = CONFIG_WAIT_MS * 5,
     .keep_alive_enable = false
 };
 
-void http_send(void) {
+void http_send(const bool isopen) {
+    sprintf(httpconfig.url, CONFIG_TELEGRAM_URI, isopen ? "open" : "close");
     esp_http_client_handle_t client = esp_http_client_init(&httpconfig);
     esp_err_t err = esp_http_client_perform(client);
 

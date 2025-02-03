@@ -4,6 +4,6 @@
 #include "esp_http_client.h"
 
 // Function declarations
-void RTC_IRAM_ATTR http_send(void);
+void RTC_IRAM_ATTR http_send(const bool isopen);
 
 #endif // HTTP_COMMANDS_H
