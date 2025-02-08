@@ -7,3 +7,4 @@ include/config_options.h
 sdkconfig.esp32-c3-devkitc-02.old
 compile_commands.json
 sdkconfig.esp32c3.old
+sdkconfig.esp32c3-debug.old

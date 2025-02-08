@@ -7,6 +7,8 @@
 
 static const char *TAG = "mqtt_commands";
 
+RTC_DATA_ATTR unsigned int mqtt_failcount = 0;
+
 #define MQTT_CONNECT_BIT   BIT2
 #define MQTT_FAIL_BIT      BIT3
 #define MQTT_PUBLISHED_BIT BIT4
@@ -53,20 +55,26 @@ esp_mqtt_client_handle_t mqtt_app_start(void) {
     if (ebresult && (ebresult & MQTT_CONNECT_BIT)) {
         return client;
     } else {
+        ESP_LOGE(TAG, "Failed to start mqtt app");
         return NULL;
     }
 }
 
-int mqtt_app_send(esp_mqtt_client_handle_t client, const char* str) {
-    int msg_id = esp_mqtt_client_publish(client, CONFIG_MQTT_TOPIC, str, 0, 1, 0);
+int mqtt_app_send(esp_mqtt_client_handle_t client, const char *topic, const char* str) {
+    ESP_LOGD(TAG, "Publishing %s to %s", str, topic);
+    int msg_id = esp_mqtt_client_publish(client, topic, str, 0, 1, 1);
     if (msg_id < 0) {
-        ESP_LOGI(TAG, "Failed to publish message\n");
+        ESP_LOGE(TAG, "Failed to publish message");
+        mqtt_failcount++;
     } else {
         EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, MQTT_PUBLISHED_BIT, pdTRUE, pdTRUE,
             (CONFIG_WAIT_MS * 5) / portTICK_PERIOD_MS);
         if (!ebresult || !(ebresult & MQTT_PUBLISHED_BIT)) {
-            ESP_LOGI(TAG, "Failed to wait for published message");
+            ESP_LOGE(TAG, "Failed to wait for published message");
+            mqtt_failcount++;
             return -1;
+        } else {
+            ESP_LOGD(TAG, "Published to %s", topic);
         }
     }
     return msg_id;

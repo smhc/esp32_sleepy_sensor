@@ -21,6 +21,7 @@ static const char *TAG = "wifi_connect";
 RTC_DATA_ATTR esp_phy_calibration_data_t cal_data;
 
 EventGroupHandle_t s_wifi_event_group = NULL;
+RTC_DATA_ATTR unsigned int wifi_failcount = 0;
 static RTC_DATA_ATTR StaticEventGroup_t s_wifi_event_group_storage;
 static RTC_DATA_ATTR esp_netif_t *netif;
 static RTC_DATA_ATTR wifi_config_t wifi_config = {
@@ -111,16 +112,18 @@ static bool RTC_IRAM_ATTR wifi_init_sta(bool retry) {
     if (retry) {
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-        ESP_LOGE(TAG, "Retry set wifi config, channel %d", wifi_config.sta.channel);
+        ESP_LOGW(TAG, "Retry set wifi config, channel %d", wifi_config.sta.channel);
     }
     ESP_ERROR_CHECK(esp_wifi_start());
 
     EventBits_t ebresult = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT|WIFI_FAIL_BIT, pdTRUE, pdFALSE,
-        (CONFIG_WAIT_MS * (retry ? 1 : 10)) / portTICK_PERIOD_MS);
+        (CONFIG_WAIT_MS * (retry ? 10 : 1)) / portTICK_PERIOD_MS);
     if (!ebresult || !(ebresult & WIFI_CONNECTED_BIT)) {
-        ESP_LOGE(TAG, "Failed connection, destroying netif");
+        ESP_LOGE(TAG, "Failed connection, stopping wifi");
         esp_wifi_stop();
+        ESP_LOGE(TAG, "Failed connection, destroying netif");
         esp_netif_destroy_default_wifi(netif);
+        ESP_LOGE(TAG, "Failed connection, clearing bits");
         xEventGroupClearBits(s_wifi_event_group, 0xFF);
         return false;
     }
@@ -130,6 +133,7 @@ static bool RTC_IRAM_ATTR wifi_init_sta(bool retry) {
 bool connect_wifi() {
     bool result = wifi_init_sta(false);
     if (!result) {
+        wifi_failcount++;
         // try again, using DHCP
         ESP_LOGI(TAG, "Failed to connect, retrying with DHCP");
         result = wifi_init_sta(true);
@@ -148,6 +152,7 @@ void disconnect_wifi() {
 }
 
 void wifi_init_boot() {
+    ESP_LOGD(TAG, "wifi init boot");
     memset(&s_wifi_event_group_storage, 0, sizeof(StaticEventGroup_t));
     s_wifi_event_group = xEventGroupCreateStatic(&s_wifi_event_group_storage);
 }
