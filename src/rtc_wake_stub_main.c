@@ -58,7 +58,7 @@ void RTC_IRAM_ATTR app_main() {
         gpio_pulldown_dis(GPIO_WAKE);
         gpio_pullup_dis(GPIO_WAKE);
         wifi_init_boot();
-        // esp_deep_sleep_disable_rom_logging();
+        esp_deep_sleep_disable_rom_logging();
     }
     xEventGroupClearBits(s_wifi_event_group, 0xFF);
 

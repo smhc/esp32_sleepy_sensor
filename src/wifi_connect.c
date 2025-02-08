@@ -22,16 +22,16 @@ RTC_DATA_ATTR esp_phy_calibration_data_t cal_data;
 
 EventGroupHandle_t s_wifi_event_group = NULL;
 RTC_DATA_ATTR unsigned int wifi_failcount = 0;
-static RTC_DATA_ATTR StaticEventGroup_t s_wifi_event_group_storage;
-static RTC_DATA_ATTR esp_netif_t *netif;
-static RTC_DATA_ATTR wifi_config_t wifi_config = {
+RTC_DATA_ATTR StaticEventGroup_t s_wifi_event_group_storage;
+RTC_DATA_ATTR esp_netif_t *netif;
+RTC_DATA_ATTR wifi_config_t wifi_config = {
     .sta = {
         .ssid = { CONFIG_WIFI_SSID },
         .password = { CONFIG_WIFI_PASS },
         .channel = 0,
     },
 };
-static RTC_IRAM_ATTR esp_netif_ip_info_t ip_info = {
+RTC_DATA_ATTR esp_netif_ip_info_t ip_info = {
     .ip = {
         .addr = 0,
     },
@@ -54,7 +54,7 @@ static void RTC_IRAM_ATTR event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Got event WIFI_EVENT_HOME_CHANNEL_CHANGE");
         wifi_event_home_channel_change_t* change = (wifi_event_home_channel_change_t*) event_data;
         ESP_LOGI(TAG, "config channel %d", wifi_config.sta.channel);
-        ESP_LOGI(TAG, "old channel: %d, new channel: %d", change->old_chan, change->new_chan);
+        ESP_LOGW(TAG, "old channel: %d, new channel: %d", change->old_chan, change->new_chan);
         if (change->old_chan != 0) {
             wifi_config.sta.channel = change->new_chan;
         }
@@ -82,8 +82,8 @@ static bool RTC_IRAM_ATTR wifi_init_sta(bool retry) {
 
     if (ip_info.ip.addr == 0 || retry) {
         // initial attempt or retry, use dhcp
-        ESP_LOGI(TAG, "Getting IP address from DHCP");
-        ip_info.ip.addr = 0;
+        ESP_LOGI(TAG, "Getting IP addresses from DHCP");
+        memset(&ip_info, 0, sizeof(ip_info));
         retry = true;
     } else {
         // use saved ipinfo
@@ -94,11 +94,13 @@ static bool RTC_IRAM_ATTR wifi_init_sta(bool retry) {
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
+    // ESP_LOGD(TAG, "Registering wifi event handler");
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
                                                         ESP_EVENT_ANY_ID,
                                                         &event_handler,
                                                         NULL,
                                                         &instance_any_id));
+    // ESP_LOGD(TAG, "Registering IP event handler");
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
                                                         IP_EVENT_STA_GOT_IP,
                                                         &event_handler,
@@ -106,13 +108,15 @@ static bool RTC_IRAM_ATTR wifi_init_sta(bool retry) {
                                                         &instance_got_ip));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    // cfg.nvs_enable = false;
+    cfg.nvs_enable = true; // use the 'fake' nvs stored in RTC mem
     bo_wsc_set(cfg.osi_funcs);
+    ESP_LOGD(TAG, "Initialise wifi cfg, channel %d", wifi_config.sta.channel);
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     if (retry) {
+        ESP_LOGD(TAG, "Setting STA mode");
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-        ESP_LOGW(TAG, "Retry set wifi config, channel %d", wifi_config.sta.channel);
+        ESP_LOGW(TAG, "Retry set wifi config, after channel %d", wifi_config.sta.channel);
     }
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -121,12 +125,11 @@ static bool RTC_IRAM_ATTR wifi_init_sta(bool retry) {
     if (!ebresult || !(ebresult & WIFI_CONNECTED_BIT)) {
         ESP_LOGE(TAG, "Failed connection, stopping wifi");
         esp_wifi_stop();
-        ESP_LOGE(TAG, "Failed connection, destroying netif");
         esp_netif_destroy_default_wifi(netif);
-        ESP_LOGE(TAG, "Failed connection, clearing bits");
         xEventGroupClearBits(s_wifi_event_group, 0xFF);
         return false;
     }
+    ESP_LOGW(TAG, "Finish Cfg channel %d", wifi_config.sta.channel);
     return true;
 }
 
